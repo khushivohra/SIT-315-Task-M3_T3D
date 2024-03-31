@@ -1,0 +1,100 @@
+#include <iostream>
+#include <fstream>
+#include <vector>
+#include <queue>
+#include <cstdlib>
+#include <ctime>
+#include <algorithm>
+#include <mpi.h>
+
+using namespace std;
+
+// struct for traffic data row
+struct TrafficSignal {
+    int row_index;
+    string time_stamp;
+    int light_id;
+    int car_count;
+};
+
+// function to sort traffic light data
+bool sort_method(const TrafficSignal& first, const TrafficSignal& second) {
+    return first.car_count > second.car_count;
+}
+
+// Function for each process to process a chunk of traffic data
+void producer_function(const vector<TrafficSignal>& traffic_data, int start_idx, int end_idx, vector<TrafficSignal>& traffic_signals) {
+    for (int i = start_idx; i < end_idx; ++i) {
+        // Accumulate car counts for each traffic light in the local chunk
+        traffic_signals[traffic_data[i].light_id - 1].car_count += traffic_data[i].car_count;
+    }
+}
+
+int main(int argc, char** argv) {
+    int rank, size;
+    MPI_Init(&argc, &argv);
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank); // Get the rank of the process
+    MPI_Comm_size(MPI_COMM_WORLD, &size); // Get the total number of processes
+
+    // Check if the filename is provided as command-line argument
+    if (argc != 2) {
+        if (rank == 0) {
+            cerr << "Usage: " << argv[0] << " <filename>" << endl;
+        }
+        MPI_Finalize();
+        return 1;
+    }
+
+    string file_name = argv[1];
+    ifstream input_file(file_name);
+    // Check if the file can be opened
+    if (!input_file.is_open()) {
+        if (rank == 0) {
+            cerr << "Error: Could not open file!" << endl;
+        }
+        MPI_Finalize();
+        return 1;
+    }
+
+    vector<TrafficSignal> traffic_data;
+    string line;
+    getline(input_file, line); // Skip header
+    // Read traffic data from the file
+    while (getline(input_file, line)) {
+        TrafficSignal signal;
+        sscanf(line.c_str(), "%d,%[^,],%d,%d", &signal.row_index, &signal.time_stamp[0], &signal.light_id, &signal.car_count);
+        traffic_data.push_back(signal);
+    }
+    input_file.close();
+
+    int total_rows = traffic_data.size();
+    int chunk_size = total_rows / size;
+    int remainder = total_rows % size;
+
+    int start_idx = rank * chunk_size + min(rank, remainder);
+    int end_idx = start_idx + chunk_size + (rank < remainder ? 1 : 0);
+
+    vector<TrafficSignal> local_traffic_signals(10, {0, "", 0, 0});
+
+    producer_function(traffic_data, start_idx, end_idx, local_traffic_signals);
+
+    vector<TrafficSignal> global_traffic_signals(10, {0, "", 0, 0});
+
+    MPI_Reduce(local_traffic_signals.data(), global_traffic_signals.data(), 10, MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD);
+
+    if (rank == 0) {
+        vector<TrafficSignal> sorted_traffic_signals(global_traffic_signals);
+        sort(sorted_traffic_signals.begin(), sorted_traffic_signals.end(), sort_method);
+
+        cout << "Traffic signals arranged on the basis of urgency | Time: " << traffic_data[0].time_stamp << endl;
+        cout << "------Traffic Light-------\t\t-----Number of Cars-----" << endl;
+        for (int i = 0; i < min(4, (int)sorted_traffic_signals.size()); ++i) {
+            cout << "\t" << sorted_traffic_signals[i].light_id << "\t\t\t\t\t" << sorted_traffic_signals[i].car_count << endl;
+        }
+         for (int i = 0; i < 10; ++i) {
+            traffic_signals[i].car_count = 0;
+    }
+
+    MPI_Finalize();
+    return 0;
+}
